@@ -1,0 +1,174 @@
+service: airtable-glue
+
+# Look into deprecation warnings
+# TODO: Update node
+provider:
+  name: aws
+  runtime: python3.7
+  stage: prod
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - "sns:Publish"
+      Resource:
+        - Ref: OAuthSNSTopic
+    - Effect: Allow
+      Action:
+        - "ssm:*"
+      Resource: "arn:aws:ssm:us-east-1:#{AWS::AccountId}:parameter/${self:provider.stage}/lambda/airtableGlue*"
+  stackTags:
+    project: airtable-glue
+    environment: ${self:provider.stage}
+  tags:
+    project: airtable-glue
+    environment: ${self:provider.stage}
+  environment:
+    MAILCHIMP_KEY: ${ssm:/${self:provider.stage}/lambda/airtableGlue/mailchimp/apiKey~true}
+    DONORBOX_API_USER: ${ssm:/${self:provider.stage}/lambda/airtableGlue/donorbox/apiUser~true}
+    DONORBOX_API_KEY: ${ssm:/${self:provider.stage}/lambda/airtableGlue/donorbox/apiKey~true}
+    AIRTABLE_KEY: ${ssm:/${self:provider.stage}/lambda/airtableGlue/airtable/apiKey~true}
+    AIRTABLE_BASE: ${ssm:/${self:provider.stage}/lambda/airtableGlue/airtable/base~true}
+    OPS_AIRTABLE_BASE: ${ssm:/${self:provider.stage}/lambda/airtableGlue/airtable/operations/base~true}
+    SOCIAL_BASE: ${ssm:/${self:provider.stage}/lambda/airtableGlue/airtable/social/base~true}
+    STRIPE_KEY: ${ssm:/${self:provider.stage}/lambda/airtableGlue/stripe/apiKey~true}
+    PAYPAL_CLIENT_ID: ${ssm:/${self:provider.stage}/lambda/airtableGlue/paypal/clientId~true}
+    PAYPAL_CLIENT_SECRET: ${ssm:/${self:provider.stage}/lambda/airtableGlue/paypal/clientSecret~true}
+    SLACK_TOKEN: ${ssm:/${self:provider.stage}/lambda/airtableGlue/slack/token~true}
+    SLACK_WEBHOOK_URL: ${ssm:/${self:provider.stage}/lambda/airtableGlue/slack/main/webhookUrl~true}
+    SLACK_DONOR_WEBHOOK_URL: ${ssm:/${self:provider.stage}/lambda/airtableGlue/slack/donors/webhookUrl~true}
+    SQUARE_TOKEN: ${ssm:/${self:provider.stage}/lambda/airtableGlue/square/token~true}
+    QUICKBOOKS_CLIENT_ID: ${ssm:/${self:provider.stage}/lambda/airtableGlue/quickbooks/clientId~true}
+    QUICKBOOKS_CLIENT_SECRET: ${ssm:/${self:provider.stage}/lambda/airtableGlue/quickbooks/clientSecret~true}
+    QUICKBOOKS_REALM_ID: ${ssm:/${self:provider.stage}/lambda/airtableGlue/quickbooks/realmId~true}
+    QUICKBOOKS_REFRESH_TOKEN: ${ssm:/${self:provider.stage}/lambda/airtableGlue/quickbooks/refreshToken~true}
+    GOOGLE_DRIVE_FOLDER_ID: ${ssm:/${self:provider.stage}/lambda/airtableGlue/google/folderId~true}
+    GOOGLE_CONTACT_SHEET_ID: ${ssm:/${self:provider.stage}/lambda/airtableGlue/google/contactSheetId~true}
+    SENTRY_DSN: ${ssm:/${self:provider.stage}/lambda/airtableGlue/sentry/dsn~true}
+    STAGE: ${self:provider.stage}
+    API_GATEWAY_ID: !Ref "ApiGatewayRestApi"
+    API_GATEWAY_URL: !Join
+      - ""
+      - - "https://"
+        - !Ref ApiGatewayRestApi
+        - ".execute-api.us-east-1.amazonaws.com/prod"
+
+functions:
+  donorbox_cron:
+    handler: glue.handler.donorbox_cron
+    timeout: 900
+    events:
+      - schedule: rate(8 hours)
+  stripe_cron:
+    handler: glue.handler.stripe_cron
+    timeout: 900
+    events:
+      - schedule: rate(3 hours)
+  stripe_webhook:
+    handler: glue.handler.stripe_webhook
+    timeout: 30
+    events:
+      - http:
+          path: stripe
+          method: post
+      - http:
+          path: stripe
+          method: get
+  maintenance_cron:
+    handler: glue.handler.maintenance_cron
+    timeout: 900
+    events:
+      - schedule: rate(3 hours)
+  slack_member_donors:
+    handler: glue.handler.slack_member_donor_cron
+    timeout: 900
+    events:
+      - schedule: rate(3 hours)
+  leave_cron:
+    handler: glue.handler.leave_cron
+    timeout: 900
+    events:
+      - schedule: rate(8 hours)
+  newsletter_analytics_cron:
+    handler: glue.handler.newsletter_analytics_cron
+    timeout: 900
+    events:
+      - schedule: rate(12 hours)
+  mailchimp_open_rate_cron:
+    handler: glue.handler.mailchimp_cron
+    timeout: 900
+    events:
+      - schedule: rate(12 hours)
+  quickbooks_oauth:
+    handler: glue.handler.quickbooks_oauth
+    timeout: 30
+    events:
+      - http:
+          path: oauth
+          method: get
+  quickbooks_oauth_callback:
+    handler: glue.handler.quickbooks_oauth_callback
+    timeout: 30
+    events:
+      - http:
+          path: oauth-callback
+          method: get
+  quickbooks_cron:
+    handler: glue.handler.quickbooks_cron
+    timeout: 900
+    environment:
+      SNS_TOPIC_ARN: !Ref OAuthSNSTopic
+    events:
+      - schedule: rate(6 hours)
+  google_sheets_yamm:
+    handler: glue.handler.google_sheets_yamm_post
+    timeout: 30
+    events:
+      - http:
+          path: google-sheets-yamm
+          method: post
+          cors: true
+  standuply_trace_webhook:
+    handler: glue.handler.standuply_contact_webhook
+    timeout: 30
+    events:
+      - http:
+          path: standuply-contact
+          method: post
+          cors: true
+
+plugins:
+  - serverless-python-requirements
+  - serverless-pseudo-parameters
+  - serverless-prune-plugin
+
+custom:
+  prune:
+    automatic: true
+    number: 3
+
+resources:
+  Resources:
+    OAuthSNSTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: ${self:service}-${self:provider.stage}-oauth
+        DisplayName: OAuthRefreshEvents
+        Tags:
+          - Key: project
+            Value: ${self:service}
+          - Key: Environment
+            Value: ${self:provider.stage}
+    OAuthSNSSubscription:
+      Type: AWS::SNS::Subscription
+      DependsOn: OAuthSNSTopic
+      Properties:
+        Endpoint: ${ssm:/${self:provider.stage}/lambda/airtableGlue/sns/alert/email~true}
+        Protocol: email
+        TopicArn: !Ref OAuthSNSTopic
+    OAuthSNSSubscriptionAlt:
+      Type: AWS::SNS::Subscription
+      DependsOn: OAuthSNSTopic
+      Properties:
+        Endpoint: ${ssm:/${self:provider.stage}/lambda/airtableGlue/sns/quickbooks/email~true}
+        Protocol: email
+        TopicArn: !Ref OAuthSNSTopic
